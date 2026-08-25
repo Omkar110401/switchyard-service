@@ -18,7 +18,9 @@ services:
       - redis_data:/data
 
   api:
-    build: ./api
+    build:
+      context: .
+      dockerfile: api/Dockerfile
     depends_on:
       - postgres
       - redis
@@ -26,6 +28,7 @@ services:
       - "8000:8000"
     volumes:
       - ./api:/app
+      - ./shared:/app/shared
     environment:
       DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
       REDIS_URL: redis://redis:6379
