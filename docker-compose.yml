@@ -33,6 +33,37 @@ services:
       DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
       REDIS_URL: redis://redis:6379
 
+  scheduler:
+    build:
+      context: .
+      dockerfile: scheduler/Dockerfile
+    depends_on:
+      - postgres
+      - redis
+    volumes:
+      - ./scheduler:/scheduler
+      - ./shared:/shared
+    environment:
+      DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
+      REDIS_URL: redis://redis:6379
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/Dockerfile
+    depends_on:
+      - postgres
+      - redis
+    deploy:
+      replicas: 3
+    volumes:
+      - ./worker:/worker
+      - ./shared:/shared
+      - ./workflows:/workflows
+    environment:
+      DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
+      REDIS_URL: redis://redis:6379
+
 volumes:
   pg_data:
   redis_data:
