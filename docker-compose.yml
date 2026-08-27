@@ -57,9 +57,9 @@ services:
     deploy:
       replicas: 3
     volumes:
-      - ./worker:/worker
-      - ./shared:/shared
-      - ./workflows:/workflows
+      - ./worker:/app/worker
+      - ./shared:/app/shared
+      - ./demos:/app/demos
     environment:
       DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
       REDIS_URL: redis://redis:6379

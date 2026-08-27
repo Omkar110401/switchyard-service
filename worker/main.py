@@ -2,7 +2,7 @@ import logging
 import os
 import sys
 
-from worker import Worker
+from worker.worker import Worker
 
 logging.basicConfig(
     level=logging.INFO,

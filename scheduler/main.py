@@ -1,7 +1,7 @@
 import logging
 import os
 
-from scheduler import Scheduler
+from scheduler.scheduler import Scheduler
 
 logging.basicConfig(
     level=logging.INFO,

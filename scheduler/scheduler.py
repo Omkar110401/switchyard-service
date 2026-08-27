@@ -79,18 +79,26 @@ class Scheduler:
             workflow_run.status = "failed"
             return
 
-        completed_tasks = self._get_completed_tasks(session, workflow_run.id)
+        task_defs = session.query(TaskDefinition).filter(
+            TaskDefinition.workflow_definition_id == workflow_def.id
+        ).all()
+        task_key_to_id = {td.task_key: td.id for td in task_defs}
+        task_id_to_key = {td.id: td.task_key for td in task_defs}
+
+        completed_task_ids = self._get_completed_tasks(session, workflow_run.id)
+        completed_task_keys = {task_id_to_key[tid] for tid in completed_task_ids if tid in task_id_to_key}
         failed_tasks = self._get_failed_tasks(session, workflow_run.id)
 
         if workflow_run.status == "pending":
             workflow_run.status = "running"
             workflow_run.started_at = datetime.utcnow()
 
-        ready_tasks = validator.get_ready_tasks(completed_tasks)
-        logger.info(f"Workflow {workflow_run.id}: {len(ready_tasks)} tasks ready")
+        ready_task_keys = validator.get_ready_tasks(completed_task_keys)
+        ready_task_ids = [task_key_to_id[key] for key in ready_task_keys]
+        logger.info(f"Workflow {workflow_run.id}: {len(ready_task_ids)} tasks ready")
 
-        for task_id in ready_tasks:
-            self._schedule_task(session, workflow_run, task_id)
+        for task_def_id in ready_task_ids:
+            self._schedule_task(session, workflow_run, task_def_id)
 
         if not self._has_pending_or_running_tasks(session, workflow_run.id):
             if failed_tasks:

@@ -1,13 +1,13 @@
 FROM python:3.14-slim
 
-WORKDIR /scheduler
+WORKDIR /app
 
 COPY scheduler/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY shared ./shared
-COPY scheduler .
+COPY scheduler ./scheduler
 
-ENV PYTHONPATH=/scheduler:/shared
+ENV PYTHONPATH=/app
 
-CMD ["python", "main.py"]
+CMD ["python", "-m", "scheduler.main"]
