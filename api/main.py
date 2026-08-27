@@ -5,12 +5,13 @@ from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 import yaml
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 
 from shared.db import init_db, get_session
-from shared.models import WorkflowDefinition, WorkflowRun, TaskDefinition, TaskDependency, TaskRun
+from shared.models import WorkflowDefinition, WorkflowRun, TaskDefinition, TaskDependency, TaskRun, User, AuditLog
 from shared.dag import validate_workflow
+from shared.auth import hash_password, verify_password, create_token, verify_token
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -59,6 +60,23 @@ class WorkflowDetailResponse(BaseModel):
     completed_at: Optional[str] = None
     tasks: List[TaskRunResponse]
 
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str
+    user_id: str
+
+class UserResponse(BaseModel):
+    id: str
+    username: str
+    created_at: str
 
 @app.on_event("startup")
 def startup_event():
@@ -75,12 +93,27 @@ def health():
     return {"status": "ok"}
 
 
+def get_current_user(authorization: str = Header(None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Invalid or missing token")
+
+    token = authorization.replace("Bearer ", "")
+    user_id = verify_token(token)
+
+    if not user_id:
+        raise HTTPException(401, "Invalid or missing token")
+
+    return user_id
+
+
 @app.get("/workflows", response_model=List[WorkflowSummaryResponse])
-def list_workflows():
+def list_workflows(user_id: str = Depends(get_current_user)):
     """Get all workflow runs with summary status."""
     session = get_session()
     try:
-        workflow_runs = session.query(WorkflowRun).order_by(WorkflowRun.created_at.desc()).all()
+        workflow_runs = session.query(WorkflowRun).filter(
+            WorkflowRun.user_id == user_id
+        ).order_by(WorkflowRun.created_at.desc()).all()
 
         summaries = []
         for run in workflow_runs:
@@ -111,12 +144,13 @@ def list_workflows():
 
 
 @app.get("/workflows/{workflow_run_id}", response_model=WorkflowDetailResponse)
-def get_workflow(workflow_run_id: str):
+def get_workflow(workflow_run_id: str, user_id: str = Depends(get_current_user)):
     """Get full workflow execution state with all task details."""
     session = get_session()
     try:
         workflow_run = session.query(WorkflowRun).filter(
-            WorkflowRun.id == workflow_run_id
+            WorkflowRun.id == workflow_run_id,
+            WorkflowRun.user_id == user_id
         ).first()
 
         if not workflow_run:
@@ -172,7 +206,7 @@ def get_workflow(workflow_run_id: str):
 
 
 @app.post("/workflows")
-def submit_workflow(workflow: WorkflowSubmission):
+def submit_workflow(workflow: WorkflowSubmission, user_id: str = Depends(get_current_user)):
     """Submit a workflow for execution."""
     try:
         workflow_dict = workflow.dict()
@@ -226,15 +260,27 @@ def submit_workflow(workflow: WorkflowSubmission):
 
             workflow_run = WorkflowRun(
                 id=uuid.uuid4(),
+                user_id=user_id,
                 workflow_definition_id=workflow_def.id,
                 status="pending",
                 triggered_by="api",
                 created_at=datetime.utcnow()
             )
             session.add(workflow_run)
+            session.flush()
+
+            audit = AuditLog(
+                id=uuid.uuid4(),
+                user_id=user_id,
+                action="workflow_submitted",
+                status="success",
+                details=workflow_dict["name"],
+                created_at=datetime.utcnow()
+            )
+            session.add(audit)
             session.commit()
 
-            logger.info(f"Workflow {workflow_dict['name']} (v{version}) submitted: {workflow_run.id}")
+            logger.info(f"Workflow {workflow_dict['name']} (v{version}) submitted by {user_id}: {workflow_run.id}")
 
             return {
                 "workflow_run_id": str(workflow_run.id),
@@ -251,3 +297,125 @@ def submit_workflow(workflow: WorkflowSubmission):
     except Exception as e:
         logger.error(f"Failed to submit workflow: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/auth/signup")
+def signup(request: SignupRequest):
+    if not request.username or len(request.username) < 3:
+        raise HTTPException(400, "Username required, min 3 chars")
+    if not request.password or len(request.password) < 8:
+        raise HTTPException(400, "Password too short")
+
+    session=get_session()
+    try:
+        existing=session.query(User).filter(User.username==request.username).first()
+        if existing:
+            audit=AuditLog(
+                id=uuid.uuid4(),
+                user_id=None,
+                action="signup",
+                status="failure",
+                details="Username already exists.",
+                created_at=datetime.utcnow()
+            )
+            session.add(audit)
+            session.commit()
+            raise HTTPException(400, "Username already exists.")
+
+        pwd_truncated = request.password[:72]
+        logger.info(f"Hashing password of length {len(pwd_truncated)}")
+        user =User(
+            id= uuid.uuid4(),
+            username=request.username,
+            password_hash=hash_password(pwd_truncated),
+            created_at=datetime.utcnow()
+        )
+        session.add(user)
+        session.flush()
+
+        audit=AuditLog(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            action="signup",
+            status="success",
+            details=None,
+            created_at=datetime.utcnow()
+        )
+        session.add(audit)
+        session.commit()
+
+        return{
+            "id": str(user.id),
+            "username": str(user.username),
+            "created_at": user.created_at.isoformat()
+        }
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Signup failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Signup failed: {str(e)}")
+    finally:
+        session.close()
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(request: LoginRequest):
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.username == request.username).first()
+
+        if not user or not verify_password(request.password[:72], user.password_hash):
+            audit = AuditLog(
+                id=uuid.uuid4(),
+                user_id=user.id if user else None,
+                action="login_attempt",
+                status="failure",
+                details="Invalid credentials",
+                created_at=datetime.utcnow()
+            )
+            session.add(audit)
+            session.commit()
+            raise HTTPException(401, "Invalid username or password")
+
+        token = create_token(str(user.id))
+
+        audit = AuditLog(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            action="login_attempt",
+            status="success",
+            details=None,
+            created_at=datetime.utcnow()
+        )
+        session.add(audit)
+        session.commit()
+
+        return {
+            "access_token": token,
+            "token_type": "bearer",
+            "user_id": str(user.id)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Login failed: {e}")
+        raise HTTPException(500, "Login failed")
+    finally:
+        session.close()
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def get_me(user_id: str = Depends(get_current_user)):
+    session = get_session()
+    try:
+        user = session.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(404, "User not found")
+
+        return {
+            "id": str(user.id),
+            "username": user.username,
+            "created_at": user.created_at.isoformat()
+        }
+    finally:
+        session.close()

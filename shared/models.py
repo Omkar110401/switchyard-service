@@ -97,10 +97,23 @@ class TaskDependency(Base):
     )
 
 
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String(255), nullable=False, unique=True, index=True)
+    password_hash = Column(String(255), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    workflow_runs = relationship("WorkflowRun", back_populates="user", cascade="all, delete-orphan")
+    audit_logs = relationship("AuditLog", back_populates="user", cascade="all, delete-orphan")
+
+
 class WorkflowRun(Base):
     __tablename__ = "workflow_runs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
     workflow_definition_id = Column(
         UUID(as_uuid=True), ForeignKey("workflow_definitions.id"), nullable=False
     )
@@ -111,6 +124,7 @@ class WorkflowRun(Base):
     created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     # Relationships
+    user = relationship("User", back_populates="workflow_runs")
     workflow_definition = relationship("WorkflowDefinition", back_populates="workflow_runs")
     task_runs = relationship("TaskRun", back_populates="workflow_run", cascade="all, delete-orphan")
 
@@ -141,4 +155,21 @@ class TaskRun(Base):
 
     __table_args__ = (
         Index("ix_task_runs_workflow_status", "workflow_run_id", "status"),
+    )
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    action = Column(String(50), nullable=False)
+    status = Column(String(20), nullable=False)
+    details = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    user = relationship("User", back_populates="audit_logs")
+
+    __table_args__ = (
+        Index("ix_audit_logs_user_created", "user_id", "created_at"),
     )
