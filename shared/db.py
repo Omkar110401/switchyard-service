@@ -66,7 +66,14 @@ def init_db(db_url: Optional[str] = None) -> None:
 def get_engine(db_url: Optional[str] = None) -> Engine:
     if db_url is None:
         db_url = get_database_url()
-    return create_engine(db_url, echo=False)
+    return create_engine(
+        db_url,
+        echo=False,
+        pool_size=3,
+        max_overflow=2,
+        pool_pre_ping=True,
+        pool_recycle=3600
+    )
 
 
 def get_session_factory(db_url: Optional[str] = None) -> sessionmaker:

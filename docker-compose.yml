@@ -2,18 +2,18 @@ services:
   postgres:
     image: postgres:16
     environment:
-      POSTGRES_DB: switchyard
-      POSTGRES_USER: switchyard
-      POSTGRES_PASSWORD: devpassword
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
-      - "5432:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
 
   redis:
     image: redis:7
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT}:6379"
     volumes:
       - redis_data:/data
 
@@ -23,6 +23,7 @@ services:
       dockerfile: api/Dockerfile
     depends_on:
       - postgres
+      - pgbouncer
       - redis
     ports:
       - "8000:8000"
@@ -30,8 +31,9 @@ services:
       - ./api:/app
       - ./shared:/app/shared
     environment:
-      DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME}
+      REDIS_URL: redis://${REDIS_HOST}:${REDIS_PORT}
+      SECRET_KEY: ${SECRET_KEY}
 
   scheduler:
     build:
@@ -39,13 +41,15 @@ services:
       dockerfile: scheduler/Dockerfile
     depends_on:
       - postgres
+      - pgbouncer
       - redis
     volumes:
       - ./scheduler:/scheduler
       - ./shared:/shared
     environment:
-      DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME}
+      REDIS_URL: redis://${REDIS_HOST}:${REDIS_PORT}
+      SECRET_KEY: ${SECRET_KEY}
 
   worker:
     build:
@@ -53,6 +57,7 @@ services:
       dockerfile: worker/Dockerfile
     depends_on:
       - postgres
+      - pgbouncer
       - redis
     deploy:
       replicas: 3
@@ -61,8 +66,25 @@ services:
       - ./shared:/app/shared
       - ./demos:/app/demos
     environment:
-      DATABASE_URL: postgresql://switchyard:devpassword@postgres:5432/switchyard
-      REDIS_URL: redis://redis:6379
+      DATABASE_URL: postgresql://${DB_USER}:${DB_PASSWORD}@pgbouncer:6432/${DB_NAME}
+      REDIS_URL: redis://${REDIS_HOST}:${REDIS_PORT}
+      SECRET_KEY: ${SECRET_KEY}
+
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    ports:
+      - "6432:6432"
+    volumes:
+      - ./pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini
+      - ./userlist.txt:/etc/pgbouncer/userlist.txt
+    depends_on:
+      - postgres
+    environment:
+      PGBOUNCER_DATABASES_HOST: postgres
+      PGBOUNCER_DATABASES_PORT: 5432
+      PGBOUNCER_DATABASES_USER: switchyard
+      PGBOUNCER_DATABASES_PASSWORD: devpassword
+      PGBOUNCER_DATABASES_DBNAME: switchyard
 
 volumes:
   pg_data:

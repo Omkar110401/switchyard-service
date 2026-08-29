@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from enum import Enum
 from typing import Optional
 
 from sqlalchemy import (
@@ -17,6 +18,17 @@ from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import declarative_base, relationship
 
 Base = declarative_base()
+
+
+class WorkflowType(str, Enum):
+    """Workflow types for task filtering."""
+    ML = "ml-pipeline"
+    ETL = "etl-pipeline"
+    ECOMMERCE = "ecommerce"
+    CICD = "cicd"
+    MEDIA = "media"
+    REPORTING = "reporting"
+    RETRY_TEST = "retry-test"
 
 
 class WorkflowDefinition(Base):

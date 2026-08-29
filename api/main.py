@@ -6,10 +6,11 @@ from typing import List, Optional, Dict, Any
 
 import yaml
 from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from shared.db import init_db, get_session
-from shared.models import WorkflowDefinition, WorkflowRun, TaskDefinition, TaskDependency, TaskRun, User, AuditLog
+from shared.models import WorkflowDefinition, WorkflowRun, TaskDefinition, TaskDependency, TaskRun, User, AuditLog, WorkflowType
 from shared.dag import validate_workflow
 from shared.auth import hash_password, verify_password, create_token, verify_token
 
@@ -17,6 +18,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Switchyard API")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:4200", "http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class WorkflowSubmission(BaseModel):
@@ -31,6 +40,7 @@ class TaskRunResponse(BaseModel):
     status: str
     attempt_number: int
     max_attempts: int
+    depends_on: List[str] = []
     outputs: Optional[Dict[str, Any]] = None
     error_message: Optional[str] = None
     created_at: str
@@ -55,6 +65,7 @@ class WorkflowDetailResponse(BaseModel):
     name: str
     version: int
     status: str
+    progress: str
     created_at: str
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
@@ -78,6 +89,33 @@ class UserResponse(BaseModel):
     username: str
     created_at: str
 
+
+class TaskInfo(BaseModel):
+    name: str
+    command: str
+    workflow_type: WorkflowType
+    outputs: List[str]
+
+
+class AvailableTasksResponse(BaseModel):
+    workflow_types: List[str]
+    tasks: List[TaskInfo]
+
+
+class TaskSubmissionInfo(BaseModel):
+    id: str
+    command: str
+    depends_on: List[str] = []
+    outputs: Optional[List[str]] = None
+
+
+class WorkflowSubmissionResponse(BaseModel):
+    workflow_run_id: str
+    workflow_name: str
+    version: int
+    status: str
+    tasks: List[TaskSubmissionInfo]
+
 @app.on_event("startup")
 def startup_event():
     try:
@@ -91,6 +129,61 @@ def startup_event():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/workflows/available-tasks", response_model=AvailableTasksResponse)
+def list_available_tasks():
+    """Return available task commands grouped by workflow type."""
+    tasks_data = [
+        # ML Pipeline
+        TaskInfo(name="fetch_dataset", command="demos/tasks/ml_fetch_data.py", workflow_type=WorkflowType.ML, outputs=["data_path"]),
+        TaskInfo(name="feature_engineering", command="demos/tasks/ml_feature_engineering.py", workflow_type=WorkflowType.ML, outputs=["features_path"]),
+        TaskInfo(name="train_model", command="demos/tasks/ml_train_model.py", workflow_type=WorkflowType.ML, outputs=["model_path"]),
+        TaskInfo(name="evaluate_model", command="demos/tasks/ml_evaluate_model.py", workflow_type=WorkflowType.ML, outputs=["metrics"]),
+        TaskInfo(name="upload_to_registry", command="demos/tasks/ml_upload_registry.py", workflow_type=WorkflowType.ML, outputs=["registry_url"]),
+        TaskInfo(name="cleanup_staging", command="demos/tasks/ml_cleanup_staging.py", workflow_type=WorkflowType.ML, outputs=["status"]),
+        # ETL Pipeline
+        TaskInfo(name="fetch_data", command="demos/tasks/fetch_data.py", workflow_type=WorkflowType.ETL, outputs=["data_file"]),
+        TaskInfo(name="transform", command="demos/tasks/transform.py", workflow_type=WorkflowType.ETL, outputs=["transformed_data"]),
+        TaskInfo(name="validate", command="demos/tasks/validate.py", workflow_type=WorkflowType.ETL, outputs=["validation_result"]),
+        TaskInfo(name="load_to_db", command="demos/tasks/load_to_db.py", workflow_type=WorkflowType.ETL, outputs=["rows_loaded"]),
+        TaskInfo(name="notify", command="demos/tasks/notify.py", workflow_type=WorkflowType.ETL, outputs=["notification_id"]),
+        # E-commerce
+        TaskInfo(name="place_order", command="demos/tasks/place_order.py", workflow_type=WorkflowType.ECOMMERCE, outputs=["order_id"]),
+        TaskInfo(name="reserve_inventory", command="demos/tasks/reserve_inventory.py", workflow_type=WorkflowType.ECOMMERCE, outputs=["reservation_id"]),
+        TaskInfo(name="process_payment", command="demos/tasks/process_payment.py", workflow_type=WorkflowType.ECOMMERCE, outputs=["transaction_id"]),
+        TaskInfo(name="confirm_order", command="demos/tasks/confirm_order.py", workflow_type=WorkflowType.ECOMMERCE, outputs=["confirmation"]),
+        TaskInfo(name="release_inventory", command="demos/tasks/release_inventory.py", workflow_type=WorkflowType.ECOMMERCE, outputs=["status"]),
+        TaskInfo(name="cancel_order", command="demos/tasks/cancel_order.py", workflow_type=WorkflowType.ECOMMERCE, outputs=["status"]),
+        # CI/CD Pipeline
+        TaskInfo(name="run_unit_tests", command="demos/tasks/run_unit_tests.py", workflow_type=WorkflowType.CICD, outputs=["test_results"]),
+        TaskInfo(name="build_artifact", command="demos/tasks/build_artifact.py", workflow_type=WorkflowType.CICD, outputs=["artifact_path"]),
+        TaskInfo(name="deploy_staging", command="demos/tasks/deploy_staging.py", workflow_type=WorkflowType.CICD, outputs=["deployment_id"]),
+        TaskInfo(name="run_smoke_tests", command="demos/tasks/run_smoke_tests.py", workflow_type=WorkflowType.CICD, outputs=["test_results"]),
+        TaskInfo(name="deploy_prod", command="demos/tasks/deploy_prod.py", workflow_type=WorkflowType.CICD, outputs=["deployment_id"]),
+        TaskInfo(name="rollback_prod", command="demos/tasks/rollback_prod.py", workflow_type=WorkflowType.CICD, outputs=["status"]),
+        # Media Processing
+        TaskInfo(name="transcode_1080p", command="demos/tasks/transcode_1080p.py", workflow_type=WorkflowType.MEDIA, outputs=["output_path"]),
+        TaskInfo(name="transcode_720p", command="demos/tasks/transcode_720p.py", workflow_type=WorkflowType.MEDIA, outputs=["output_path"]),
+        TaskInfo(name="transcode_480p", command="demos/tasks/transcode_480p.py", workflow_type=WorkflowType.MEDIA, outputs=["output_path"]),
+        TaskInfo(name="generate_thumbnail", command="demos/tasks/generate_thumbnail.py", workflow_type=WorkflowType.MEDIA, outputs=["thumbnail_path"]),
+        TaskInfo(name="run_content_moderation", command="demos/tasks/run_content_moderation.py", workflow_type=WorkflowType.MEDIA, outputs=["approval"]),
+        TaskInfo(name="publish_media", command="demos/tasks/publish_media.py", workflow_type=WorkflowType.MEDIA, outputs=["cdn_url"]),
+        # Reporting
+        TaskInfo(name="fetch_sales_data", command="demos/tasks/fetch_sales_data.py", workflow_type=WorkflowType.REPORTING, outputs=["data_path"]),
+        TaskInfo(name="fetch_user_data", command="demos/tasks/fetch_user_data.py", workflow_type=WorkflowType.REPORTING, outputs=["data_path"]),
+        TaskInfo(name="fetch_marketing_data", command="demos/tasks/fetch_marketing_data.py", workflow_type=WorkflowType.REPORTING, outputs=["data_path"]),
+        TaskInfo(name="merge_datasets", command="demos/tasks/merge_datasets.py", workflow_type=WorkflowType.REPORTING, outputs=["merged_path"]),
+        TaskInfo(name="generate_pdf_report", command="demos/tasks/generate_pdf_report.py", workflow_type=WorkflowType.REPORTING, outputs=["pdf_path"]),
+        TaskInfo(name="upload_to_storage", command="demos/tasks/upload_to_storage.py", workflow_type=WorkflowType.REPORTING, outputs=["storage_url"]),
+        TaskInfo(name="notify_stakeholders", command="demos/tasks/notify_stakeholders.py", workflow_type=WorkflowType.REPORTING, outputs=["status"]),
+        # Retry Testing
+        TaskInfo(name="flaky_operation", command="demos/tasks/flaky_task.py", workflow_type=WorkflowType.RETRY_TEST, outputs=["result"]),
+    ]
+
+    workflow_types = sorted(list(set(t.workflow_type.value for t in tasks_data)))
+
+    return AvailableTasksResponse(workflow_types=workflow_types, tasks=tasks_data)
 
 
 def get_current_user(authorization: str = Header(None)) -> str:
@@ -117,15 +210,15 @@ def list_workflows(user_id: str = Depends(get_current_user)):
 
         summaries = []
         for run in workflow_runs:
+            workflow_def = run.workflow_definition
+            total_tasks = len(workflow_def.task_definitions)
+
             completed_count = session.query(TaskRun).filter(
                 TaskRun.workflow_run_id == run.id,
                 TaskRun.status == "succeeded"
             ).count()
-            total_count = session.query(TaskRun).filter(
-                TaskRun.workflow_run_id == run.id
-            ).count()
 
-            progress = f"{completed_count}/{total_count}" if total_count > 0 else "0/0"
+            progress = f"{completed_count}/{total_tasks}"
 
             summaries.append(WorkflowSummaryResponse(
                 id=str(run.id),
@@ -176,13 +269,16 @@ def get_workflow(workflow_run_id: str, user_id: str = Depends(get_current_user))
             completed_at = task_run.completed_at.isoformat() if task_run and task_run.completed_at else None
             heartbeat_at = task_run.heartbeat_at.isoformat() if task_run and task_run.heartbeat_at else None
 
+            depends_on = [str(dep.depends_on_task.id) for dep in task_def.dependencies]
+
             tasks.append(TaskRunResponse(
-                id=str(task_run.id) if task_run else str(task_def.id),
+                id=str(task_def.id),
                 key=task_def.task_key,
                 command=task_def.command,
                 status=status,
                 attempt_number=attempt_number,
                 max_attempts=task_def.retry_max_attempts if task_def.retry_max_attempts > 0 else 1,
+                depends_on=depends_on,
                 outputs=outputs,
                 error_message=error_message,
                 created_at=created_at or datetime.utcnow().isoformat(),
@@ -191,11 +287,16 @@ def get_workflow(workflow_run_id: str, user_id: str = Depends(get_current_user))
                 heartbeat_at=heartbeat_at
             ))
 
+        completed_count = sum(1 for t in tasks if t.status == "succeeded")
+        total_count = len(tasks)
+        progress = f"{completed_count}/{total_count}"
+
         return WorkflowDetailResponse(
             id=str(workflow_run.id),
             name=workflow_def.name,
             version=workflow_def.version,
             status=workflow_run.status,
+            progress=progress,
             created_at=workflow_run.created_at.isoformat(),
             started_at=workflow_run.started_at.isoformat() if workflow_run.started_at else None,
             completed_at=workflow_run.completed_at.isoformat() if workflow_run.completed_at else None,
@@ -205,7 +306,55 @@ def get_workflow(workflow_run_id: str, user_id: str = Depends(get_current_user))
         session.close()
 
 
-@app.post("/workflows")
+VALID_COMMANDS = {
+    # ML Pipeline
+    "demos/tasks/ml_fetch_data.py",
+    "demos/tasks/ml_feature_engineering.py",
+    "demos/tasks/ml_train_model.py",
+    "demos/tasks/ml_evaluate_model.py",
+    "demos/tasks/ml_upload_registry.py",
+    "demos/tasks/ml_cleanup_staging.py",
+    # ETL Pipeline
+    "demos/tasks/fetch_data.py",
+    "demos/tasks/transform.py",
+    "demos/tasks/validate.py",
+    "demos/tasks/load_to_db.py",
+    "demos/tasks/notify.py",
+    # E-commerce
+    "demos/tasks/place_order.py",
+    "demos/tasks/reserve_inventory.py",
+    "demos/tasks/process_payment.py",
+    "demos/tasks/confirm_order.py",
+    "demos/tasks/release_inventory.py",
+    "demos/tasks/cancel_order.py",
+    # CI/CD Pipeline
+    "demos/tasks/run_unit_tests.py",
+    "demos/tasks/build_artifact.py",
+    "demos/tasks/deploy_staging.py",
+    "demos/tasks/run_smoke_tests.py",
+    "demos/tasks/deploy_prod.py",
+    "demos/tasks/rollback_prod.py",
+    # Media Processing
+    "demos/tasks/transcode_1080p.py",
+    "demos/tasks/transcode_720p.py",
+    "demos/tasks/transcode_480p.py",
+    "demos/tasks/generate_thumbnail.py",
+    "demos/tasks/run_content_moderation.py",
+    "demos/tasks/publish_media.py",
+    # Reporting
+    "demos/tasks/fetch_sales_data.py",
+    "demos/tasks/fetch_user_data.py",
+    "demos/tasks/fetch_marketing_data.py",
+    "demos/tasks/merge_datasets.py",
+    "demos/tasks/generate_pdf_report.py",
+    "demos/tasks/upload_to_storage.py",
+    "demos/tasks/notify_stakeholders.py",
+    # Retry Testing
+    "demos/tasks/flaky_task.py",
+}
+
+
+@app.post("/workflows", response_model=WorkflowSubmissionResponse)
 def submit_workflow(workflow: WorkflowSubmission, user_id: str = Depends(get_current_user)):
     """Submit a workflow for execution."""
     try:
@@ -214,6 +363,13 @@ def submit_workflow(workflow: WorkflowSubmission, user_id: str = Depends(get_cur
         result = validate_workflow(workflow_dict)
         if not result.is_valid:
             raise HTTPException(status_code=400, detail=f"Invalid workflow: {result.errors}")
+
+        for task in workflow_dict.get("tasks", []):
+            if task["command"] not in VALID_COMMANDS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unknown command: {task['command']}. Available commands: {', '.join(sorted(VALID_COMMANDS))}"
+                )
 
         session = get_session()
         try:
@@ -282,12 +438,23 @@ def submit_workflow(workflow: WorkflowSubmission, user_id: str = Depends(get_cur
 
             logger.info(f"Workflow {workflow_dict['name']} (v{version}) submitted by {user_id}: {workflow_run.id}")
 
-            return {
-                "workflow_run_id": str(workflow_run.id),
-                "workflow_name": workflow_dict["name"],
-                "version": version,
-                "status": "pending"
-            }
+            tasks_response = [
+                TaskSubmissionInfo(
+                    id=task["id"],
+                    command=task["command"],
+                    depends_on=task.get("depends_on", []),
+                    outputs=task.get("outputs")
+                )
+                for task in workflow_dict.get("tasks", [])
+            ]
+
+            return WorkflowSubmissionResponse(
+                workflow_run_id=str(workflow_run.id),
+                workflow_name=workflow_dict["name"],
+                version=version,
+                status="pending",
+                tasks=tasks_response
+            )
 
         finally:
             session.close()
@@ -310,16 +477,6 @@ def signup(request: SignupRequest):
     try:
         existing=session.query(User).filter(User.username==request.username).first()
         if existing:
-            audit=AuditLog(
-                id=uuid.uuid4(),
-                user_id=None,
-                action="signup",
-                status="failure",
-                details="Username already exists.",
-                created_at=datetime.utcnow()
-            )
-            session.add(audit)
-            session.commit()
             raise HTTPException(400, "Username already exists.")
 
         pwd_truncated = request.password[:72]

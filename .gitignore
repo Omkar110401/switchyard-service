@@ -219,3 +219,10 @@ __marimo__/
 
 # Demo workflows and test data (local testing only)
 demos/
+
+# PgBouncer configuration and secrets
+pgbouncer.ini
+userlist.txt
+
+# Test configuration
+pytest.ini
