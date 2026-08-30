@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Optional
 
 from sqlalchemy import (
+    Boolean,
     Column,
     DateTime,
     ForeignKey,
@@ -139,6 +140,12 @@ class WorkflowRun(Base):
     user = relationship("User", back_populates="workflow_runs")
     workflow_definition = relationship("WorkflowDefinition", back_populates="workflow_runs")
     task_runs = relationship("TaskRun", back_populates="workflow_run", cascade="all, delete-orphan")
+
+    is_deleted = Column(Boolean, nullable=False, default=False)
+
+    __table_args__ = (
+        Index("ix_workflow_runs_user_deleted", "user_id", "is_deleted"),
+    )
 
 
 class TaskRun(Base):

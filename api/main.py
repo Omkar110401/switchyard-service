@@ -116,6 +116,48 @@ class WorkflowSubmissionResponse(BaseModel):
     status: str
     tasks: List[TaskSubmissionInfo]
 
+class WorkflowDeleteResponse(BaseModel):
+    workflow_run_id: str
+    status: str
+    error: bool
+
+
+class AnalyticsSummary(BaseModel):
+    total_workflows: int
+    success_rate: float
+    avg_execution_time_seconds: float
+    total_failures: int
+
+
+class TrendData(BaseModel):
+    date: str
+    success_rate: float
+
+
+class AnalyticsTrends(BaseModel):
+    trends: List[TrendData]
+
+
+class ErrorData(BaseModel):
+    error: str
+    count: int
+
+
+class AnalyticsErrors(BaseModel):
+    errors: List[ErrorData]
+
+
+class TaskStats(BaseModel):
+    command: str
+    total_runs: int
+    successes: int
+    failures: int
+    avg_time_seconds: float
+
+
+class AnalyticsTasks(BaseModel):
+    tasks: List[TaskStats]
+
 @app.on_event("startup")
 def startup_event():
     try:
@@ -205,7 +247,8 @@ def list_workflows(user_id: str = Depends(get_current_user)):
     session = get_session()
     try:
         workflow_runs = session.query(WorkflowRun).filter(
-            WorkflowRun.user_id == user_id
+            WorkflowRun.user_id == user_id,
+            WorkflowRun.is_deleted==False
         ).order_by(WorkflowRun.created_at.desc()).all()
 
         summaries = []
@@ -243,6 +286,7 @@ def get_workflow(workflow_run_id: str, user_id: str = Depends(get_current_user))
     try:
         workflow_run = session.query(WorkflowRun).filter(
             WorkflowRun.id == workflow_run_id,
+            WorkflowRun.is_deleted==False,
             WorkflowRun.user_id == user_id
         ).first()
 
@@ -576,3 +620,176 @@ def get_me(user_id: str = Depends(get_current_user)):
         }
     finally:
         session.close()
+
+
+@app.delete("/workflows/{workflow_run_id}", response_model=WorkflowDeleteResponse)
+def delete_workflow(workflow_run_id: str, user_id: str=Depends(get_current_user)):
+    session=get_session()
+    try:
+        workflow=session.query(WorkflowRun).filter(
+            WorkflowRun.id==workflow_run_id,
+            WorkflowRun.user_id==user_id
+        ).first()
+
+        if not workflow:
+            raise HTTPException(404, "Workflow not found.")
+        
+        workflow.is_deleted=True
+        audit = AuditLog(
+            id=uuid.uuid4(),
+            user_id=user_id,
+            action="delete_workflow",
+            status="success",
+            details=workflow_run_id,
+            created_at=datetime.utcnow()
+        )
+        session.add(audit)
+        session.commit()
+
+        return WorkflowDeleteResponse(
+                workflow_run_id= workflow_run_id,
+                status= "Workflow deleted successfully.",
+                error= False
+        )
+    finally:
+        session.close()
+
+
+@app.get("/analytics/summary", response_model=AnalyticsSummary)
+def get_analytics_summary(user_id: str = Depends(get_current_user)):
+    session = get_session()
+    try:
+        workflows = session.query(WorkflowRun).filter(
+            WorkflowRun.user_id == user_id,
+            WorkflowRun.is_deleted == False
+        ).all()
+
+        total_workflows = len(workflows)
+        succeeded = len([w for w in workflows if w.status == "succeeded"])
+        failed = len([w for w in workflows if w.status == "failed"])
+
+        success_rate = (succeeded / total_workflows * 100) if total_workflows > 0 else 0
+
+        completed_workflows = [w for w in workflows if w.completed_at and w.started_at]
+        avg_time = 0.0
+        if completed_workflows:
+            total_time = sum((w.completed_at - w.started_at).total_seconds() for w in completed_workflows)
+            avg_time = total_time / len(completed_workflows)
+
+        return AnalyticsSummary(
+            total_workflows=total_workflows,
+            success_rate=round(success_rate, 2),
+            avg_execution_time_seconds=round(avg_time, 2),
+            total_failures=failed
+        )
+    finally:
+        session.close()
+
+
+@app.get("/analytics/trends", response_model=AnalyticsTrends)
+def get_analytics_trends(user_id: str = Depends(get_current_user)):
+    from sqlalchemy import func
+    session = get_session()
+    try:
+        workflows = session.query(WorkflowRun).filter(
+            WorkflowRun.user_id == user_id,
+            WorkflowRun.is_deleted == False
+        ).all()
+
+        trends_dict = {}
+        for workflow in workflows:
+            date_str = workflow.created_at.date().isoformat()
+            if date_str not in trends_dict:
+                trends_dict[date_str] = {"total": 0, "succeeded": 0}
+            trends_dict[date_str]["total"] += 1
+            if workflow.status == "succeeded":
+                trends_dict[date_str]["succeeded"] += 1
+
+        trends = [
+            TrendData(
+                date=date,
+                success_rate=round((data["succeeded"] / data["total"] * 100) if data["total"] > 0 else 0, 2)
+            )
+            for date, data in sorted(trends_dict.items(), reverse=True)
+        ]
+
+        return AnalyticsTrends(trends=trends)
+    finally:
+        session.close()
+
+
+@app.get("/analytics/errors", response_model=AnalyticsErrors)
+def get_analytics_errors(user_id: str = Depends(get_current_user)):
+    from sqlalchemy import func
+    session = get_session()
+    try:
+        failed_workflows = session.query(WorkflowRun.id).filter(
+            WorkflowRun.user_id == user_id,
+            WorkflowRun.status == "failed",
+            WorkflowRun.is_deleted == False
+        ).all()
+
+        failed_workflow_ids = [w.id for w in failed_workflows]
+
+        if not failed_workflow_ids:
+            return AnalyticsErrors(errors=[])
+
+        error_data = session.query(
+            TaskRun.error_message,
+            func.count(TaskRun.id).label("count")
+        ).filter(
+            TaskRun.workflow_run_id.in_(failed_workflow_ids),
+            TaskRun.error_message.isnot(None)
+        ).group_by(TaskRun.error_message).order_by(
+            func.count(TaskRun.id).desc()
+        ).limit(10).all()
+
+        errors = [
+            ErrorData(error=row.error_message, count=row.count)
+            for row in error_data
+        ]
+
+        return AnalyticsErrors(errors=errors)
+    finally:
+        session.close()
+
+
+@app.get("/analytics/tasks", response_model=AnalyticsTasks)
+def get_analytics_tasks(user_id: str = Depends(get_current_user)):
+    from sqlalchemy import func, extract, case
+    session = get_session()
+    try:
+        task_stats = session.query(
+            TaskDefinition.command,
+            func.count(TaskRun.id).label("total_runs"),
+            func.count(case((TaskRun.status == "succeeded", 1))).label("successes"),
+            func.count(case((TaskRun.status == "failed", 1))).label("failures"),
+            func.avg(
+                extract("epoch", TaskRun.completed_at - TaskRun.started_at)
+            ).label("avg_time_seconds")
+        ).join(
+            TaskDefinition, TaskRun.task_definition_id == TaskDefinition.id
+        ).join(
+            WorkflowRun, TaskRun.workflow_run_id == WorkflowRun.id
+        ).filter(
+            WorkflowRun.user_id == user_id,
+            WorkflowRun.is_deleted == False
+        ).group_by(TaskDefinition.command).order_by(
+            func.count(TaskRun.id).desc()
+        ).all()
+
+        tasks = [
+            TaskStats(
+                command=row.command,
+                total_runs=row.total_runs,
+                successes=row.successes or 0,
+                failures=row.failures or 0,
+                avg_time_seconds=round(float(row.avg_time_seconds) if row.avg_time_seconds else 0, 2)
+            )
+            for row in task_stats
+        ]
+
+        return AnalyticsTasks(tasks=tasks)
+    finally:
+        session.close()
+    
