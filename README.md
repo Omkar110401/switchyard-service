@@ -289,3 +289,7 @@ python api/main.py
 **PostgreSQL for durability:** All workflow and task state persists across restarts, enabling recovery from scheduler crashes without data loss. State is captured at each transition point (task start, completion, failure).
 
 **Worker heartbeats and lease-based reclaiming:** Workers signal liveness via periodic heartbeats. If a worker crashes, Redis Streams automatically reassigns its tasks to other workers after the lease expires, with configurable timeout windows.
+
+## Related Repo
+
+Frontend: [switchyard-ui](https://github.com/Omkar110401/switchyard-ui).
