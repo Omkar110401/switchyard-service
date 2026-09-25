@@ -252,27 +252,40 @@ volumes:
   redis_data:
 ```
 
-## 10. Build Roadmap (3–4 months)
+## 10. Getting Started
 
-| Phase | Focus |
-|---|---|
-| **Month 1** | DAG model + validation (cycle detection, topological sort, parallel branches), single-worker happy-path execution end-to-end, Postgres schema for workflow/task state |
-| **Month 2** | Multi-worker pool via Redis Streams consumer groups, retry logic with backoff, idempotent task claiming, state persistence/recovery on scheduler restart, output → input templating |
-| **Month 3** | `on_failure` compensating tasks (saga pattern), chaos/failure injection testing (kill workers, simulate partitions, verify recovery), Angular dashboard with live DAG visualization, all 5 demo workflows built out |
-| **Month 4** | Polish, real benchmark numbers (throughput, recovery time under failure), technical write-up of design decisions, stretch features (cron-triggered workflows, priority queues, resource-aware scheduling, visual drag-and-drop DAG builder) |
+**Prerequisites:** Docker, Docker Compose, Node.js (for Angular), Python 3.11+.
 
-## 11. Engineering Principles for This Codebase
+**Quick Start:**
+```bash
+git clone <repo-url>
+cd switchyard
+docker-compose up --build
+```
 
-- **Commit incrementally, with real debugging history.** No large "phase-complete" dumps. Commits should reflect actual iteration — write a failing test, fix it, commit. This matters for the project's credibility as genuinely engineered, not agent-generated in bulk.
-- **Minimize meta-documentation.** One README, kept current. No `COMPLETION_SUMMARY.md`, `TEST_INVENTORY.md`, or similar — these read as AI-agent scaffolding rather than engineering artifact.
-- **Every non-trivial design decision gets a one-paragraph rationale** in code comments or `/docs/decisions/` — e.g. why Postgres over Mongo, why Streams over Pub/Sub, why randomized retry backoff, why on_failure instead of a full saga orchestration framework. These are exactly the questions an interviewer will ask.
-- **Benchmark claims must be backed by committed data.** `/chaos/results/` should contain real output from real runs, not aspirational numbers.
-- **Demo task scripts are deliberately simple but genuinely functional.** They really execute, really read/write files or DB rows, and really fail on bad input — complexity belongs in the orchestrator, not the demo business logic.
+This starts the full stack: Postgres, Redis, API server, Scheduler, and Worker pool.
 
-## 12. Working With Claude Code on This Repo
+**Access the system:**
+- API: `http://localhost:8000`
+- Dashboard: `http://localhost:4200` (after running `cd ui && npm install && ng serve`)
 
-When starting a session in VS Code with Claude Code, point it at this README first — it contains the full architecture, stack, workflow spec, and phase plan. Useful framing for early sessions:
+**Local development (without Docker):**
+```bash
+cd switchyard-service
+python -m venv venv
+source venv/bin/activate
+pip install -r api/requirements.txt
+python api/main.py
+```
 
-> "Read README.md. We're starting Month 1: DAG model, validation, and single-worker happy-path execution. Let's start with the DAG data model and cycle detection in `shared/`."
+## 11. Key Design Decisions
 
-Keep sessions scoped to one phase/component at a time rather than asking for the whole system at once — this keeps commits small and reviewable, in line with the engineering principles above.
+**Redis Streams over Celery:** Using Redis Streams consumer groups directly enables custom control over heartbeats, lease expiry, and idempotent dispatch — core distributed-systems concepts. This provides full visibility into queue mechanics rather than abstracting them away.
+
+**At-least-once delivery with idempotent tasks:** Tasks are designed to be safely re-executed. This is simpler and more reliable than attempting exactly-once guarantees at the queue level, which requires distributed coordination.
+
+**Compensating transactions (SAGA pattern):** Provides clean rollback semantics for partial workflow failures without requiring distributed locks or two-phase commits. A task declares its compensation handler via the `on_failure` field.
+
+**PostgreSQL for durability:** All workflow and task state persists across restarts, enabling recovery from scheduler crashes without data loss. State is captured at each transition point (task start, completion, failure).
+
+**Worker heartbeats and lease-based reclaiming:** Workers signal liveness via periodic heartbeats. If a worker crashes, Redis Streams automatically reassigns its tasks to other workers after the lease expires, with configurable timeout windows.
