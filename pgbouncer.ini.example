@@ -1,0 +1,22 @@
+[databases]
+switchyard = host=postgres port=5432 dbname=switchyard user=switchyard password=YOUR_DB_PASSWORD_HERE
+postgres = host=postgres port=5432 dbname=postgres user=switchyard password=YOUR_DB_PASSWORD_HERE
+
+[pgbouncer]
+pool_mode = transaction
+max_client_conn = 1000
+default_pool_size = 10
+min_pool_size = 5
+reserve_pool_size = 5
+reserve_pool_timeout = 3
+max_db_connections = 100
+max_user_connections = 100
+server_idle_timeout = 600
+listen_port = 6432
+listen_addr = 0.0.0.0
+logfile = /var/log/pgbouncer/pgbouncer.log
+pidfile = /var/run/pgbouncer/pgbouncer.pid
+admin_users = postgres
+stats_users = postgres
+auth_type = md5
+auth_file = /etc/pgbouncer/userlist.txt
